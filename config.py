@@ -59,12 +59,16 @@ API_PORT = int(os.getenv("PORT", os.getenv("API_PORT", "8080")))
 SECRET_KEY = os.getenv("SECRET_KEY", "goldentv-secret-key-2026").strip()
 
 # Public URL resolution (Railway domain or static public host)
-PUBLIC_URL = os.getenv("PUBLIC_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+DEFAULT_PUBLIC_URL = "https://maj83bd-production.up.railway.app"
+PUBLIC_URL = os.getenv("PUBLIC_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("RAILWAY_STATIC_URL")
 if PUBLIC_URL:
+    PUBLIC_URL = PUBLIC_URL.strip()
     if not PUBLIC_URL.startswith("http"):
         PUBLIC_URL = f"https://{PUBLIC_URL}"
+    if "0.0.0.0" in PUBLIC_URL or "127.0.0.1" in PUBLIC_URL:
+        PUBLIC_URL = DEFAULT_PUBLIC_URL
 else:
-    PUBLIC_URL = f"http://{API_HOST}:{API_PORT}"
+    PUBLIC_URL = DEFAULT_PUBLIC_URL
 
 # App Version Reference (com.A2)
 APP_PACKAGE = "com.A2"

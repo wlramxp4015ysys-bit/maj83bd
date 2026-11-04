@@ -644,6 +644,18 @@ def handle_callbacks(call):
         handle_callbacks(call)
         return
 
+    if data.startswith("ch_edlogo_"):
+        chid = data[len("ch_edlogo_"):]
+        user_states[user_id] = {"action": "wait_ch_new_logo", "data": {"chid": chid}}
+        bot.edit_message_text(
+            "🎨 <b>تعديل شعار/أيقونة القناة</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "أرسل الآن صورة الشعار مباشرة كصورة (Photo) في هذه المحادثة، أو رابط الصورة (URL)، أو إيموجي (مثل 📺 أو ⚽):",
+            chat_id, msg_id, reply_markup=cancel_keyboard()
+        )
+        bot.answer_callback_query(call.id)
+        return
+
     # 4. Updates Routing
     if data == "menu_update":
         text, kb = render_update_menu()
@@ -1004,6 +1016,28 @@ def handle_text_messages(message):
         db.update_channel_basic(chid, url=raw_text)
         user_states.pop(user_id, None)
         bot.reply_to(message, "✅ تم تعديل رابط بث القناة بنجاح!", reply_markup=back_keyboard(f"ch_view_{chid}"))
+        return
+
+    if action == "wait_ch_new_logo":
+        chid = state["data"]["chid"]
+        logo_val = ""
+        if message.photo:
+            file_id = message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            down = bot.download_file(file_info.file_path)
+            fn = f"ch_{chid}_{int(time.time())}.jpg"
+            save_path = os.path.join(UPLOADS_DIR, fn)
+            with open(save_path, "wb") as f:
+                f.write(down)
+            logo_val = f"{PUBLIC_URL}/static/uploads/{fn}"
+        elif raw_text.startswith("http://") or raw_text.startswith("https://"):
+            logo_val = raw_text
+        elif raw_text:
+            logo_val = raw_text.strip()[:6]
+
+        db.update_channel_basic(chid, logo=logo_val)
+        user_states.pop(user_id, None)
+        bot.reply_to(message, "✅ تم تحديث شعار وأيقونة القناة بنجاح!", reply_markup=back_keyboard(f"ch_view_{chid}"))
         return
 
     # 3. APK Update Wizard

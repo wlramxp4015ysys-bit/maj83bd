@@ -87,6 +87,7 @@ async def handle_app_config(request):
     channels = db.get_channels()
     categories = db.get_categories()
     latest_notif = db.get_latest_notification()
+    apis = db.get_channel_apis()
 
     return json_ar({
         "status": "success",
@@ -101,7 +102,19 @@ async def handle_app_config(request):
         }
     })
 
+from config import API_HOST, API_PORT, APP_PACKAGE, CURRENT_APP_VERSION_CODE, PUBLIC_URL
 import os
+
+def sanitize_url(u):
+    if not u or not isinstance(u, str):
+        return u
+    u = u.strip()
+    if u.startswith("http://0.0.0.0:8080") or u.startswith("http://127.0.0.1:8080"):
+        part = u.split(":8080", 1)[1]
+        return f"{PUBLIC_URL}{part}"
+    if u.startswith("/static/") or u.startswith("/uploads/"):
+        return f"{PUBLIC_URL}{u}"
+    return u
 
 async def handle_categories(request):
     """Returns channel categories, optionally filtered by api_id."""
@@ -110,6 +123,12 @@ async def handle_categories(request):
     categories = db.get_categories(api_id)
     if not include_hidden:
         categories = [c for c in categories if not c.get("hidden", False)]
+    
+    # Sanitize category image URLs
+    for c in categories:
+        if c.get("image"):
+            c["image"] = sanitize_url(c["image"])
+
     return json_ar({
         "status": "success",
         "count": len(categories),
@@ -134,6 +153,12 @@ async def handle_channels(request):
 
     if api_id and api_id != "all":
         channels = [c for c in channels if c.get("api_id") == api_id]
+
+    # Sanitize channel logos
+    for ch in channels:
+        if ch.get("logo"):
+            ch["logo"] = sanitize_url(ch["logo"])
+
     return json_ar({
         "status": "success",
         "filter": category or "all",
@@ -242,13 +267,14 @@ def make_app():
     app.router.add_get("/api/notifications", handle_notifications)
     app.router.add_get("/api/notifications/", handle_notifications)
 
-    updates_dir = os.path.join(os.path.dirname(__file__), "data", "updates")
-    os.makedirs(updates_dir, exist_ok=True)
-    app.router.add_static("/static/", path=updates_dir, show_index=False)
-
     uploads_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
     os.makedirs(uploads_dir, exist_ok=True)
     app.router.add_static("/static/uploads/", path=uploads_dir, show_index=False)
+    app.router.add_static("/uploads/", path=uploads_dir, show_index=False)
+
+    updates_dir = os.path.join(os.path.dirname(__file__), "data", "updates")
+    os.makedirs(updates_dir, exist_ok=True)
+    app.router.add_static("/static/", path=updates_dir, show_index=False)
 
     return app
 

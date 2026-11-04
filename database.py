@@ -55,6 +55,28 @@ class Database:
                         "added_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                     }
                 self._save_raw(data)
+            self.clean_manual_channels()
+
+    def clean_manual_channels(self):
+        """Removes any manually added app channels from the database permanently."""
+        with _lock:
+            data = self._load_raw()
+            channels = data.get("channels", [])
+            initial_count = len(channels)
+            kept = [
+                ch for ch in channels
+                if not (
+                    str(ch.get("id", "")).startswith("ch-app-")
+                    or str(ch.get("id", "")).startswith("direct-")
+                    or "مضاف يدوياً" in str(ch.get("currentShow", ""))
+                    or "مضاف يدوياً" in str(ch.get("description", ""))
+                )
+            ]
+            if len(kept) != initial_count:
+                data["channels"] = kept
+                self._save_raw(data)
+                logger.info("Cleaned %d manual channels from DB", initial_count - len(kept))
+            return initial_count - len(kept)
 
     def _load_raw(self):
         try:
