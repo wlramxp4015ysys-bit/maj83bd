@@ -265,11 +265,14 @@ def render_update_menu():
 
 def render_notifications_menu():
     latest = db.get_latest_notification()
+    cur_sound = db.get_notification_sound()
+    sound_line = f"🔊 <b>صوت الإشعار الحالي:</b> {cur_sound.get('name', 'افتراضي')}\n"
     last_text = "لا توجد إشعارات سابقة"
     if latest:
         img_badge = " [مرفق صورة 🖼️]" if latest.get("image") else ""
+        sound_badge = f" [نغمة: {latest.get('sound', 'افتراضية')}]" if latest.get("sound") else ""
         last_text = (
-            f"<b>{latest.get('title')}</b>{img_badge}\n"
+            f"<b>{latest.get('title')}</b>{img_badge}{sound_badge}\n"
             f"{latest.get('message')}\n"
             f"<i>التاريخ: {latest.get('created_at')}</i>"
         )
@@ -277,13 +280,15 @@ def render_notifications_menu():
     text = (
         "🔔 <b>نظام الإشعارات الرياضية والشعارات</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "يمكنك إرسال إشعار فوري لجميع مستخدمي التطبيق مع إمكانية إرفاق شعار أو صورة مميزة.\n\n"
+        "يمكنك إرسال إشعار فوري لجميع مستخدمي التطبيق مع إمكانية إرفاق شعار أو صورة وتخصيص صوت الإشعار.\n\n"
+        f"{sound_line}"
         f"📌 <b>آخر إشعار تم إرساله:</b>\n{last_text}\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
 
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton("📢 إنشاء وإرسال إشعار جديد الآن", callback_data="notif_new"))
+    kb.add(types.InlineKeyboardButton("🔊 تخصيص نغمة وصوت الإشعار", callback_data="notif_sound_menu"))
     kb.add(types.InlineKeyboardButton("📋 سجل الإشعارات السابقة", callback_data="notif_history"))
     kb.add(types.InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="main_menu"))
     return text, kb
@@ -779,6 +784,64 @@ def handle_callbacks(call):
         handle_callbacks(call)
         return
 
+    if data == "notif_sound_menu":
+        cur_sound = db.get_notification_sound()
+        s_url = cur_sound.get('url', '')
+        url_text = f"<code>{s_url}</code>" if s_url else "افتراضي (نغمة النظام)"
+        text = (
+            "🔊 <b>تخصيص نغمة وصوت الإشعار في التطبيق</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎵 النغمة الحالية: <b>{cur_sound.get('name', 'افتراضي')}</b>\n"
+            f"🔗 الرابط: {url_text}\n\n"
+            "اختر إحدى النغمات الجاهزة، أو ارفع ملفك الصوتي الخاص ليستلمه جميع المستخدمين:"
+        )
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(types.InlineKeyboardButton("🔔 نغمة النظام الافتراضية", callback_data="notif_sound_preset_default"))
+        kb.add(types.InlineKeyboardButton("⚽ صافرة حكم رياضية حماسية", callback_data="notif_sound_preset_whistle"))
+        kb.add(types.InlineKeyboardButton("📢 صرخة هدف كروي رائع", callback_data="notif_sound_preset_goal"))
+        kb.add(types.InlineKeyboardButton("✨ نغمة تنبيه مميزة", callback_data="notif_sound_preset_chime"))
+        kb.add(types.InlineKeyboardButton("📤 رفع ملف صوتي مخصص (MP3 / WAV / OGG)", callback_data="notif_sound_upload"))
+        kb.add(types.InlineKeyboardButton("🔙 رجوع لقائمة الإشعارات", callback_data="menu_notif"))
+        bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
+        bot.answer_callback_query(call.id)
+        return
+
+    if data.startswith("notif_sound_preset_"):
+        preset = data[len("notif_sound_preset_"):]
+        if preset == "default":
+            db.set_notification_sound("", "افتراضي (نغمة النظام)")
+            name = "افتراضي (نغمة النظام)"
+        elif preset == "whistle":
+            db.set_notification_sound("whistle", "صافرة رياضية ⚽")
+            name = "صافرة رياضية ⚽"
+        elif preset == "goal":
+            db.set_notification_sound("goal", "صوت هدف حماسي 📢")
+            name = "صوت هدف حماسي 📢"
+        elif preset == "chime":
+            db.set_notification_sound("chime", "نغمة مميزة ✨")
+            name = "نغمة مميزة ✨"
+        else:
+            db.set_notification_sound("", "افتراضي")
+            name = "افتراضي"
+        bot.answer_callback_query(call.id, f"تم ضبط النغمة بنجاح: {name} ✅", show_alert=True)
+        call.data = "notif_sound_menu"
+        handle_callbacks(call)
+        return
+
+    if data == "notif_sound_upload":
+        user_states[user_id] = {"action": "wait_notif_sound_upload", "data": {}}
+        prompt = (
+            "📤 <b>رفع ملف صوتي مخصص للإشعارات</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "أرسل الآن الملف الصوتي:\n"
+            "• ملف صوتي MP3 أو WAV أو OGG أو M4A\n"
+            "• أو رسالة صوتية (Voice Note)\n"
+            "• أو رابط مباشر للملف الصوتي يبدأ بـ http"
+        )
+        bot.edit_message_text(prompt, chat_id, msg_id, reply_markup=cancel_keyboard())
+        bot.answer_callback_query(call.id)
+        return
+
     # 6. Maintenance Routing
     if data == "menu_maint":
         text, kb = render_maintenance_menu()
@@ -877,9 +940,13 @@ def handle_text_messages(message):
         cat_name = state["data"]["name"]
         icon = "📁"
         image_url = ""
-
+        file_id = None
         if message.photo:
             file_id = message.photo[-1].file_id
+        elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+            file_id = message.document.file_id
+
+        if file_id:
             file_info = bot.get_file(file_id)
             down = bot.download_file(file_info.file_path)
             fn = f"cat_{int(time.time())}.jpg"
@@ -929,10 +996,15 @@ def handle_text_messages(message):
 
     if action == "wait_cat_new_icon":
         cid = state["data"]["cid"]
-        icon = "📁"
-        image_url = ""
+        icon = None
+        image_url = None
+        file_id = None
         if message.photo:
             file_id = message.photo[-1].file_id
+        elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+            file_id = message.document.file_id
+
+        if file_id:
             file_info = bot.get_file(file_id)
             down = bot.download_file(file_info.file_path)
             fn = f"cat_{int(time.time())}.jpg"
@@ -1168,18 +1240,79 @@ def handle_text_messages(message):
             with open(save_path, "wb") as f:
                 f.write(down)
             image_url = f"{PUBLIC_URL}/static/uploads/{fn}"
+        elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+            file_id = message.document.file_id
+            file_info = bot.get_file(file_id)
+            down = bot.download_file(file_info.file_path)
+            fn = f"notif_{int(time.time())}.jpg"
+            save_path = os.path.join(UPLOADS_DIR, fn)
+            with open(save_path, "wb") as f:
+                f.write(down)
+            image_url = f"{PUBLIC_URL}/static/uploads/{fn}"
         elif raw_text.startswith("http://") or raw_text.startswith("https://"):
             image_url = raw_text
 
+        cur_sound = db.get_notification_sound()
         db.add_notification(title, msg_content, image=image_url)
         user_states.pop(user_id, None)
 
         bot.reply_to(
             message,
             f"🎉 <b>تم إرسال الإشعار لجميع المستخدمين بنجاح!</b> 📢\n\n<b>{title}</b>\n{msg_content}\n"
-            f"🖼️ الصورة: {'مرفقة ✅' if image_url else 'بدون صورة'}",
+            f"🖼️ الصورة: {'مرفقة ✅' if image_url else 'بدون صورة'}\n"
+            f"🔊 نغمة الإشعار: <b>{cur_sound.get('name', 'افتراضي')}</b>",
             reply_markup=back_keyboard("menu_notif")
         )
+        return
+
+    if action == "wait_notif_sound_upload":
+        sound_url = ""
+        sound_name = "ملف صوتي مخصص 🎵"
+        file_id = None
+        ext = ".mp3"
+
+        if message.audio:
+            file_id = message.audio.file_id
+            sound_name = message.audio.title or message.audio.file_name or "ملف صوتي"
+            ext = os.path.splitext(message.audio.file_name or ".mp3")[1] or ".mp3"
+        elif message.voice:
+            file_id = message.voice.file_id
+            sound_name = "تسجيل صوتي 🎙️"
+            ext = ".ogg"
+        elif message.document:
+            file_id = message.document.file_id
+            sound_name = message.document.file_name or "ملف صوتي"
+            ext = os.path.splitext(message.document.file_name or ".mp3")[1] or ".mp3"
+
+        if file_id:
+            file_info = bot.get_file(file_id)
+            down = bot.download_file(file_info.file_path)
+            fn = f"sound_{int(time.time())}{ext}"
+            save_path = os.path.join(UPLOADS_DIR, fn)
+            with open(save_path, "wb") as f:
+                f.write(down)
+            sound_url = f"{PUBLIC_URL}/static/uploads/{fn}"
+        elif raw_text.startswith("http://") or raw_text.startswith("https://"):
+            sound_url = raw_text
+            sound_name = "رابط صوتي مباشر"
+
+        if sound_url:
+            db.set_notification_sound(sound_url, sound_name)
+            user_states.pop(user_id, None)
+            bot.reply_to(
+                message,
+                f"🎉 <b>تم تعيين صوت الإشعار بنجاح!</b> 🔊\n\n"
+                f"🎵 الاسم: <b>{sound_name}</b>\n"
+                f"🔗 الرابط: <code>{sound_url}</code>\n\n"
+                f"سيتم تشغيل هذا الصوت لجميع مستخدمي التطبيق فور وصول أي إشعار جديد!",
+                reply_markup=back_keyboard("menu_notif")
+            )
+        else:
+            bot.reply_to(
+                message,
+                "⚠️ لم يتم التعرف على الملف الصوتي. يرجى إرسال ملف MP3 أو WAV أو رسالة صوتية أو رابط مباشر.",
+                reply_markup=cancel_keyboard()
+            )
         return
 
     # 5. Maintenance Wizard

@@ -237,8 +237,11 @@ class Database:
             if new_icon is not None and str(new_icon).strip():
                 target["icon"] = str(new_icon).strip()
 
-            if new_image is not None:
-                target["image"] = str(new_image).strip()
+            if new_image is not None and str(new_image).strip():
+                if str(new_image).strip().lower() in ("clear", "remove", "delete"):
+                    target["image"] = ""
+                else:
+                    target["image"] = str(new_image).strip()
 
             if api_id is not None:
                 if str(api_id).strip() in ["", "none", "direct"]:
@@ -1520,22 +1523,43 @@ class Database:
             return up
 
     # ------------------ Push Notifications ------------------
-    def add_notification(self, title, message, image=None):
+    def get_notification_sound(self):
+        with _lock:
+            data = self._load_raw()
+            return data.get("notification_sound", {"url": "", "name": "افتراضي (نغمة النظام)"})
+
+    def set_notification_sound(self, sound_url, sound_name="مخصص"):
+        with _lock:
+            data = self._load_raw()
+            data["notification_sound"] = {
+                "url": str(sound_url).strip() if sound_url else "",
+                "name": str(sound_name).strip() if sound_name else "افتراضي (نغمة النظام)"
+            }
+            self._save_raw(data)
+            logger.info("Notification sound updated: %s (%s)", sound_name, sound_url)
+            return True
+
+    def add_notification(self, title, message, image=None, sound=None):
         with _lock:
             data = self._load_raw()
             notifs = data.setdefault("notifications", [])
             notif_id = f"notif_{int(time.time())}"
+            active_sound = sound
+            if active_sound is None:
+                stored_sound = data.get("notification_sound", {})
+                active_sound = stored_sound.get("url", "")
             item = {
                 "id": notif_id,
                 "title": str(title).strip(),
                 "message": str(message).strip(),
                 "image": str(image).strip() if image else "",
+                "sound": str(active_sound).strip() if active_sound else "",
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             notifs.insert(0, item)
             data["notifications"] = notifs[:50]
             self._save_raw(data)
-            logger.info("New notification created: %s (%s)", notif_id, title)
+            logger.info("New notification created: %s (%s, sound=%s)", notif_id, title, active_sound)
             return True, item
 
     def get_notifications(self, limit=10):

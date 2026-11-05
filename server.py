@@ -86,7 +86,8 @@ async def handle_app_config(request):
     update_info = db.get_app_update()
     channels = db.get_channels()
     categories = db.get_categories()
-    latest_notif = db.get_latest_notification()
+    latest_notif = sanitize_notif(db.get_latest_notification())
+    sound_info = db.get_notification_sound()
     apis = db.get_channel_apis()
 
     return json_ar({
@@ -95,6 +96,8 @@ async def handle_app_config(request):
         "maintenance": maintenance,
         "update": update_info,
         "notification": latest_notif,
+        "notification_sound": sanitize_url(sound_info.get("url", "")),
+        "notification_sound_name": sound_info.get("name", "افتراضي"),
         "counts": {
             "channels": len(channels),
             "categories": len(categories),
@@ -115,6 +118,16 @@ def sanitize_url(u):
     if u.startswith("/static/") or u.startswith("/uploads/"):
         return f"{PUBLIC_URL}{u}"
     return u
+
+def sanitize_notif(n):
+    if not n or not isinstance(n, dict):
+        return n
+    res = dict(n)
+    if "image" in res:
+        res["image"] = sanitize_url(res["image"])
+    if "sound" in res:
+        res["sound"] = sanitize_url(res["sound"])
+    return res
 
 async def handle_categories(request):
     """Returns channel categories, optionally filtered by api_id."""
@@ -226,12 +239,14 @@ async def handle_channel_apis(request):
 async def handle_notifications(request):
     """Returns latest push notifications."""
     limit = int(request.query.get("limit", 10))
-    notifs = db.get_notifications(limit=limit)
-    latest = db.get_latest_notification()
+    notifs = [sanitize_notif(n) for n in db.get_notifications(limit=limit)]
+    latest = sanitize_notif(db.get_latest_notification())
+    sound_info = db.get_notification_sound()
     return json_ar({
         "status": "success",
         "count": len(notifs),
         "latest": latest,
+        "notification_sound": sanitize_url(sound_info.get("url", "")),
         "notifications": notifs
     })
 
