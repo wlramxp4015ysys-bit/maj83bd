@@ -250,6 +250,44 @@ async def handle_notifications(request):
         "notifications": notifs
     })
 
+async def handle_fcm_register(request):
+    """Registers or updates a client FCM device token."""
+    try:
+        data = await request.json()
+        token = data.get("token", "").strip()
+        device_id = data.get("device_id", "").strip()
+        model = data.get("model", "").strip()
+        version = data.get("version", "").strip()
+        platform = data.get("platform", "android").strip()
+        if not token:
+            return json_ar({"status": "error", "message": "token is required"}, status=400)
+        ok, res = db.register_device_token(token, device_id=device_id, model=model, app_version=version, platform=platform)
+        return json_ar({"status": "success", "device": res})
+    except Exception as e:
+        return json_ar({"status": "error", "message": str(e)}, status=500)
+
+async def handle_fcm_unregister(request):
+    """Unregisters a client FCM device token."""
+    try:
+        data = await request.json()
+        token = data.get("token", "").strip()
+        if not token:
+            return json_ar({"status": "error", "message": "token is required"}, status=400)
+        ok = db.unregister_device_token(token)
+        return json_ar({"status": "success", "unregistered": ok})
+    except Exception as e:
+        return json_ar({"status": "error", "message": str(e)}, status=500)
+
+async def handle_fcm_stats(request):
+    """Returns FCM device registration statistics."""
+    from fcm_sender import is_firebase_configured
+    tokens = db.get_all_fcm_tokens()
+    return json_ar({
+        "status": "success",
+        "registered_devices": len(tokens),
+        "firebase_configured": is_firebase_configured()
+    })
+
 def make_app():
     app = web.Application(middlewares=[cors_middleware, maintenance_middleware])
     app.router.add_get("/", handle_root)
@@ -281,6 +319,13 @@ def make_app():
 
     app.router.add_get("/api/notifications", handle_notifications)
     app.router.add_get("/api/notifications/", handle_notifications)
+
+    app.router.add_post("/api/fcm/register", handle_fcm_register)
+    app.router.add_post("/api/fcm/register/", handle_fcm_register)
+    app.router.add_post("/api/fcm/unregister", handle_fcm_unregister)
+    app.router.add_post("/api/fcm/unregister/", handle_fcm_unregister)
+    app.router.add_get("/api/fcm/stats", handle_fcm_stats)
+    app.router.add_get("/api/fcm/stats/", handle_fcm_stats)
 
     uploads_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
     os.makedirs(uploads_dir, exist_ok=True)

@@ -171,10 +171,12 @@ class Database:
             return result
 
     def get_category(self, cat_id):
+        if not cat_id: return None
+        target_id = str(cat_id).strip().lower()
         with _lock:
             data = self._load_raw()
             for c in data.get("categories", []):
-                if c.get("id") == cat_id:
+                if str(c.get("id", "")).strip().lower() == target_id or str(c.get("name", "")).strip().lower() == target_id:
                     return c
             return None
 
@@ -188,7 +190,7 @@ class Database:
             clean_image = str(image).strip() if image else ""
             clean_api = str(api_id).strip() if api_id else "general"
             for c in cats:
-                if c["id"] == clean_id:
+                if str(c.get("id", "")).strip().lower() == clean_id:
                     c["name"] = clean_name
                     c["icon"] = clean_icon
                     if clean_image: c["image"] = clean_image
@@ -209,7 +211,7 @@ class Database:
             self._save_raw(data)
 
             # Verification
-            verified = any(c["id"] == clean_id for c in self._load_raw().get("categories", []))
+            verified = any(str(c.get("id", "")).strip().lower() == clean_id for c in self._load_raw().get("categories", []))
             if verified:
                 logger.info("Category added to DB: %s", new_cat)
                 return True, new_cat
@@ -217,31 +219,40 @@ class Database:
             return False, "فشل حفظ القسم في قاعدة البيانات"
 
     def update_category(self, cat_id, new_name=None, new_icon=None, new_image=None, api_id=None):
+        if not cat_id: return False, "معرف القسم غير صالح"
+        target_id = str(cat_id).strip().lower()
         with _lock:
             data = self._load_raw()
             cats = data.setdefault("categories", [])
             target = None
             for c in cats:
-                if c["id"] == cat_id:
+                if str(c.get("id", "")).strip().lower() == target_id or str(c.get("name", "")).strip().lower() == target_id:
                     target = c
                     break
             if not target:
                 return False, "القسم المطلوب غير موجود"
 
+            old_name = target.get("name", "")
+            actual_id = target.get("id", target_id)
+
             if new_name is not None and str(new_name).strip():
                 target["name"] = str(new_name).strip()
                 for ch in data.get("channels", []):
-                    if ch.get("category") == cat_id:
+                    ch_cat = str(ch.get("category", "")).strip().lower()
+                    ch_cat_name = str(ch.get("categoryName", "")).strip().lower()
+                    if ch_cat == str(actual_id).strip().lower() or ch_cat_name == old_name.strip().lower():
                         ch["categoryName"] = target["name"]
+                        ch["category"] = actual_id
 
             if new_icon is not None and str(new_icon).strip():
                 target["icon"] = str(new_icon).strip()
 
-            if new_image is not None and str(new_image).strip():
-                if str(new_image).strip().lower() in ("clear", "remove", "delete"):
+            if new_image is not None:
+                img_str = str(new_image).strip()
+                if img_str.lower() in ("clear", "remove", "delete", "none", ""):
                     target["image"] = ""
                 else:
-                    target["image"] = str(new_image).strip()
+                    target["image"] = img_str
 
             if api_id is not None:
                 if str(api_id).strip() in ["", "none", "direct"]:
@@ -251,31 +262,51 @@ class Database:
 
             self._save_raw(data)
 
-            verified = any(c["id"] == cat_id for c in self._load_raw().get("categories", []))
+            verified = any(str(c.get("id", "")).strip().lower() == str(actual_id).strip().lower() for c in self._load_raw().get("categories", []))
             if verified:
                 logger.info("Category updated in DB: %s", target)
                 return True, target
             return False, "فشل حفظ تعديل القسم"
 
     def delete_category(self, cat_id, delete_channels=False, move_to_cat_id=None):
+        if not cat_id: return False, "معرف القسم غير صالح"
+        target_id = str(cat_id).strip().lower()
         with _lock:
             data = self._load_raw()
             cats = data.get("categories", [])
             initial_len = len(cats)
-            data["categories"] = [c for c in cats if c["id"] != cat_id]
+            target = next((c for c in cats if str(c.get("id", "")).strip().lower() == target_id or str(c.get("name", "")).strip().lower() == target_id), None)
+            if not target:
+                return False, "القسم غير موجود"
+
+            actual_id = str(target.get("id", target_id)).strip().lower()
+            actual_name = str(target.get("name", "")).strip().lower()
+
+            data["categories"] = [
+                c for c in cats
+                if str(c.get("id", "")).strip().lower() != actual_id
+                and str(c.get("name", "")).strip().lower() != actual_name
+            ]
 
             channels = data.get("channels", [])
             if delete_channels:
-                data["channels"] = [ch for ch in channels if ch.get("category") != cat_id]
+                data["channels"] = [
+                    ch for ch in channels
+                    if str(ch.get("category", "")).strip().lower() != actual_id
+                    and str(ch.get("categoryName", "")).strip().lower() != actual_name
+                ]
             elif move_to_cat_id:
-                dest_cat = next((c for c in data.get("categories", []) if c["id"] == move_to_cat_id), None)
+                dest_id = str(move_to_cat_id).strip().lower()
+                dest_cat = next((c for c in data.get("categories", []) if str(c.get("id", "")).strip().lower() == dest_id), None)
                 dest_name = dest_cat.get("name", "عام") if dest_cat else "عام"
                 for ch in channels:
-                    if ch.get("category") == cat_id:
-                        ch["category"] = move_to_cat_id
+                    ch_cat = str(ch.get("category", "")).strip().lower()
+                    ch_cat_name = str(ch.get("categoryName", "")).strip().lower()
+                    if ch_cat == actual_id or ch_cat_name == actual_name:
+                        ch["category"] = dest_cat.get("id", move_to_cat_id) if dest_cat else move_to_cat_id
                         ch["categoryName"] = dest_name
             else:
-                gen_cat = next((c for c in data.get("categories", []) if c["id"] == "general"), None)
+                gen_cat = next((c for c in data.get("categories", []) if str(c.get("id", "")).strip().lower() == "general"), None)
                 if not gen_cat:
                     data.setdefault("categories", []).append({
                         "id": "general",
@@ -283,7 +314,9 @@ class Database:
                         "icon": "📁"
                     })
                 for ch in channels:
-                    if ch.get("category") == cat_id:
+                    ch_cat = str(ch.get("category", "")).strip().lower()
+                    ch_cat_name = str(ch.get("categoryName", "")).strip().lower()
+                    if ch_cat == actual_id or ch_cat_name == actual_name:
                         ch["category"] = "general"
                         ch["categoryName"] = "عام"
 
@@ -291,8 +324,8 @@ class Database:
 
             verified = len(self._load_raw().get("categories", [])) < initial_len
             if verified:
-                logger.info("Category deleted from DB: %s (delete_channels=%s, move_to=%s)", cat_id, delete_channels, move_to_cat_id)
-                return True, cat_id
+                logger.info("Category deleted from DB: %s (delete_channels=%s, move_to=%s)", actual_id, delete_channels, move_to_cat_id)
+                return True, actual_id
             return False, "القسم غير موجود أو تعذر حذفه"
 
     def search_categories(self, query):
@@ -407,15 +440,26 @@ class Database:
         with _lock:
             data = self._load_raw()
             channels = data.get("channels", [])
-            if category and category != "all":
-                return [c for c in channels if c.get("category") == category]
+            if category and str(category).strip().lower() != "all":
+                target_cat = str(category).strip().lower()
+                norm_cat = self._normalize_arabic(category)
+                return [
+                    c for c in channels
+                    if str(c.get("category", "")).strip().lower() == target_cat
+                    or str(c.get("categoryName", "")).strip().lower() == target_cat
+                    or self._normalize_arabic(c.get("category", "")) == norm_cat
+                    or self._normalize_arabic(c.get("categoryName", "")) == norm_cat
+                ]
             return channels
 
     def get_channel(self, channel_id):
+        if not channel_id:
+            return None
+        target_id = str(channel_id).strip().lower()
         with _lock:
             data = self._load_raw()
             for ch in data.get("channels", []):
-                if ch.get("id") == channel_id:
+                if str(ch.get("id", "")).strip().lower() == target_id:
                     return ch
             return None
 
@@ -649,14 +693,22 @@ class Database:
         with _lock:
             data = self._load_raw()
             channels = data.get("channels", [])
-            if category_id and category_id != "all":
-                channels = [c for c in channels if c.get("category") == category_id]
-            if search_query and search_query.strip():
+            if category_id and str(category_id).strip().lower() != "all":
+                target_cat = str(category_id).strip().lower()
+                norm_cat = self._normalize_arabic(category_id)
+                channels = [
+                    c for c in channels
+                    if str(c.get("category", "")).strip().lower() == target_cat
+                    or str(c.get("categoryName", "")).strip().lower() == target_cat
+                    or self._normalize_arabic(c.get("category", "")) == norm_cat
+                    or self._normalize_arabic(c.get("categoryName", "")) == norm_cat
+                ]
+            if search_query and str(search_query).strip():
                 norm_q = self._normalize_arabic(search_query)
                 filtered = []
                 for ch in channels:
                     name = self._normalize_arabic(ch.get("name", ""))
-                    if norm_q in name or norm_q in ch.get("id", "").lower():
+                    if norm_q in name or norm_q in str(ch.get("id", "")).lower():
                         filtered.append(ch)
                 channels = filtered
             total_items = len(channels)
@@ -673,31 +725,41 @@ class Database:
             }
 
     def update_channel_basic(self, channel_id, name=None, url=None, quality=None, logo=None, category_id=None):
+        if not channel_id:
+            return False, "معرف القناة غير صالح"
+        target_id = str(channel_id).strip().lower()
         with _lock:
             data = self._load_raw()
             channels = data.get("channels", [])
-            target = next((ch for ch in channels if ch["id"] == channel_id), None)
+            target = None
+            for ch in channels:
+                if str(ch.get("id", "")).strip().lower() == target_id:
+                    target = ch
+                    break
             if not target:
                 return False, "القناة غير موجودة"
-            if name and name.strip():
-                target["name"] = name.strip()
-            if url and url.strip():
-                target["url"] = url.strip()
-                target["streamUrl"] = url.strip()
-                if target.get("servers") and len(target["servers"]) > 0:
-                    target["servers"][0]["url"] = url.strip()
-            if quality and quality.strip():
-                target["quality"] = quality.strip().upper()
-                if target.get("servers") and len(target["servers"]) > 0:
-                    target["servers"][0]["quality"] = quality.strip().upper()
+            if name and str(name).strip():
+                target["name"] = str(name).strip()
+                if target.get("servers"):
+                    target["servers"][0]["name"] = str(name).strip()
+            if url and str(url).strip():
+                target["url"] = str(url).strip()
+                target["streamUrl"] = str(url).strip()
+                if target.get("servers"):
+                    target["servers"][0]["url"] = str(url).strip()
+            if quality and str(quality).strip():
+                target["quality"] = str(quality).strip().upper()
+                if target.get("servers"):
+                    target["servers"][0]["quality"] = str(quality).strip().upper()
             if logo is not None:
-                target["logo"] = logo.strip()
+                target["logo"] = str(logo).strip()
             if category_id:
-                cat = next((c for c in data.get("categories", []) if c["id"] == category_id), None)
-                target["category"] = category_id
-                target["categoryName"] = cat.get("name", category_id) if cat else category_id
+                clean_cat = str(category_id).strip().lower()
+                cat = next((c for c in data.get("categories", []) if str(c.get("id", "")).strip().lower() == clean_cat or str(c.get("name", "")).strip().lower() == clean_cat), None)
+                target["category"] = cat.get("id", clean_cat) if cat else clean_cat
+                target["categoryName"] = cat.get("name", category_id) if cat else str(category_id).strip()
             self._save_raw(data)
-            logger.info("Channel %s updated: name=%s, url=%s, qual=%s", channel_id, name, url, quality)
+            logger.info("Channel %s updated: name=%s, url=%s, qual=%s, cat=%s", channel_id, name, url, quality, category_id)
             return True, target
 
     def toggle_channel_disabled(self, channel_id):
@@ -1642,6 +1704,96 @@ class Database:
                 self._save_raw(data)
                 return True
             return False
+
+    # ------------------ FCM Device Tokens Management ------------------
+    def register_device_token(self, token, device_id=None, model=None, app_version=None, platform="android"):
+        if not token or not str(token).strip():
+            return False, "رمز الجهاز غير صالح"
+        token = str(token).strip()
+        device_id = str(device_id).strip() if device_id else token[:20]
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        with _lock:
+            data = self._load_raw()
+            devices = data.setdefault("fcm_tokens", [])
+            existing = None
+            for d in devices:
+                if d.get("device_id") == device_id or d.get("token") == token:
+                    existing = d
+                    break
+
+            if existing:
+                existing["token"] = token
+                if model: existing["model"] = str(model).strip()
+                if app_version: existing["app_version"] = str(app_version).strip()
+                existing["platform"] = platform
+                existing["updated_at"] = now_str
+                existing["last_active"] = now_str
+                self._save_raw(data)
+                logger.info("FCM device token updated: %s (%s)", device_id, model)
+                return True, existing
+            else:
+                new_device = {
+                    "token": token,
+                    "device_id": device_id,
+                    "model": str(model).strip() if model else "Android Device",
+                    "app_version": str(app_version).strip() if app_version else "1.1",
+                    "platform": platform,
+                    "created_at": now_str,
+                    "updated_at": now_str,
+                    "last_active": now_str
+                }
+                devices.append(new_device)
+                self._save_raw(data)
+                logger.info("New FCM device registered: %s (%s)", device_id, model)
+                return True, new_device
+
+    def unregister_device_token(self, token_or_device_id):
+        if not token_or_device_id: return False
+        key = str(token_or_device_id).strip()
+        with _lock:
+            data = self._load_raw()
+            devices = data.get("fcm_tokens", [])
+            new_devices = [d for d in devices if d.get("token") != key and d.get("device_id") != key]
+            if len(new_devices) != len(devices):
+                data["fcm_tokens"] = new_devices
+                self._save_raw(data)
+                logger.info("FCM device unregistered: %s", key)
+                return True
+            return False
+
+    def get_all_fcm_tokens(self):
+        with _lock:
+            data = self._load_raw()
+            devices = data.get("fcm_tokens", [])
+            tokens = []
+            for d in devices:
+                t = d.get("token")
+                if t and str(t).strip() and str(t).strip() not in tokens:
+                    tokens.append(str(t).strip())
+            return tokens
+
+    def get_fcm_devices(self):
+        with _lock:
+            data = self._load_raw()
+            return data.get("fcm_tokens", [])
+
+    def get_fcm_devices_count(self):
+        return len(self.get_all_fcm_tokens())
+
+    def remove_invalid_tokens(self, invalid_tokens):
+        if not invalid_tokens: return 0
+        invalids = set(str(t).strip() for t in invalid_tokens if t)
+        with _lock:
+            data = self._load_raw()
+            devices = data.get("fcm_tokens", [])
+            initial_count = len(devices)
+            data["fcm_tokens"] = [d for d in devices if d.get("token") not in invalids]
+            removed = initial_count - len(data["fcm_tokens"])
+            if removed > 0:
+                self._save_raw(data)
+                logger.info("Removed %d invalid FCM tokens from DB", removed)
+            return removed
 
 # Global Database Instance
 db = Database()

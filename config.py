@@ -74,3 +74,9 @@ else:
 APP_PACKAGE = "com.A2"
 CURRENT_APP_VERSION_CODE = 2
 CURRENT_APP_VERSION_NAME = "1.1"
+
+# Firebase Cloud Messaging (FCM) Configuration
+FIREBASE_SERVER_KEY = os.getenv("FIREBASE_SERVER_KEY", "").strip()
+FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "").strip()
+FIREBASE_SERVICE_ACCOUNT_PATH = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "").strip()
+

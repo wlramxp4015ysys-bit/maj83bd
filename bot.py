@@ -277,17 +277,24 @@ def render_notifications_menu():
             f"<i>التاريخ: {latest.get('created_at')}</i>"
         )
 
+    from fcm_sender import is_firebase_configured
+    dev_count = db.get_fcm_devices_count()
+    fcm_status_badge = "🟢 Firebase FCM: مربوط وجاهز للبث السحابي" if is_firebase_configured() else "🟡 Firebase FCM: في انتظار إضافة FIREBASE_SERVER_KEY"
+
     text = (
-        "🔔 <b>نظام الإشعارات الرياضية والشعارات</b>\n"
+        "🔔 <b>نظام الإشعارات الفورية وبث FCM</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "يمكنك إرسال إشعار فوري لجميع مستخدمي التطبيق مع إمكانية إرفاق شعار أو صورة وتخصيص صوت الإشعار.\n\n"
-        f"{sound_line}"
+        f"📱 <b>الأجهزة المسجلة (FCM Devices):</b> <b>{dev_count} جهاز</b>\n"
+        f"{fcm_status_badge}\n"
+        f"{sound_line}\n"
         f"📌 <b>آخر إشعار تم إرساله:</b>\n{last_text}\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
 
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton("📢 إنشاء وإرسال إشعار جديد الآن", callback_data="notif_new"))
+    kb.add(types.InlineKeyboardButton(f"📱 أجهزة FCM المسجلة ({dev_count})", callback_data="notif_fcm_stats"))
     kb.add(types.InlineKeyboardButton("🔊 تخصيص نغمة وصوت الإشعار", callback_data="notif_sound_menu"))
     kb.add(types.InlineKeyboardButton("📋 سجل الإشعارات السابقة", callback_data="notif_history"))
     kb.add(types.InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="main_menu"))
@@ -487,33 +494,53 @@ def handle_callbacks(call):
         bot.answer_callback_query(call.id)
         return
 
+    if data.startswith("cat_del_confirm_"):
+        raw_payload = data[len("cat_del_confirm_"):]
+        if raw_payload.endswith("_both") or ":both" in raw_payload:
+            cid = raw_payload.split(":both")[0] if ":both" in raw_payload else raw_payload[:-len("_both")]
+            delete_ch = True
+        elif raw_payload.endswith("_move") or ":move" in raw_payload:
+            cid = raw_payload.split(":move")[0] if ":move" in raw_payload else raw_payload[:-len("_move")]
+            delete_ch = False
+        else:
+            cid = raw_payload
+            delete_ch = False
+
+        ok, res = db.delete_category(cid, delete_channels=delete_ch)
+        try:
+            if ok:
+                bot.answer_callback_query(call.id, "تم حذف القسم بنجاح 🗑️", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, f"تنبيه: {res}", show_alert=True)
+        except Exception:
+            pass
+
+        text, kb = render_categories_page(page=1)
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
+        except Exception:
+            pass
+        return
+
     if data.startswith("cat_del_"):
         cid = data[len("cat_del_"):]
         c = db.get_category(cid)
         ch_cnt = len(db.get_channels(cid))
         kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(types.InlineKeyboardButton("🗑️ نعم، احذف القسم وقنواته معاً", callback_data=f"cat_del_confirm_{cid}_both"))
-        kb.add(types.InlineKeyboardButton("📁 احذف القسم فقط وانقل قنواته لقسم عام", callback_data=f"cat_del_confirm_{cid}_move"))
+        kb.add(types.InlineKeyboardButton("🗑️ نعم، احذف القسم وقنواته معاً", callback_data=f"cat_del_confirm_{cid}:both"))
+        kb.add(types.InlineKeyboardButton("📁 احذف القسم فقط وانقل قنواته لقسم عام", callback_data=f"cat_del_confirm_{cid}:move"))
         kb.add(types.InlineKeyboardButton("❌ تراجع وإلغاء", callback_data=f"cat_view_{cid}"))
 
         text = (
-            f"⚠️ <b>هل أنت متأكد من حذف القسم «{c.get('name', cid)}»؟</b>\n"
+            f"⚠️ <b>هل أنت متأكد من حذف القسم «{c.get('name', cid) if c else cid}»؟</b>\n"
             f"يحتوي هذا القسم على <b>{ch_cnt}</b> قناة.\n"
             f"اختر كيفية التعامل مع القنوات:"
         )
         bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
-        bot.answer_callback_query(call.id)
-        return
-
-    if data.startswith("cat_del_confirm_"):
-        parts = data.split("_")
-        cid = parts[3]
-        mode = parts[4]
-        delete_ch = (mode == "both")
-        db.delete_category(cid, delete_channels=delete_ch)
-        bot.answer_callback_query(call.id, "تم حذف القسم بنجاح 🗑️", show_alert=True)
-        call.data = "cat_p_1"
-        handle_callbacks(call)
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
         return
 
     # 3. Channels Hub & Management Routing
@@ -524,9 +551,10 @@ def handle_callbacks(call):
         return
 
     if data.startswith("ch_cat_"):
-        parts = data.split("_")
-        cat_id = parts[2]
-        page = int(parts[3])
+        raw_payload = data[len("ch_cat_"):]
+        parts = raw_payload.rsplit("_", 1)
+        cat_id = parts[0]
+        page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
         text, kb = render_channels_page(category_id=cat_id, page=page)
         bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
         bot.answer_callback_query(call.id)
@@ -588,21 +616,157 @@ def handle_callbacks(call):
         )
         toggle_label = "🟢 تفعيل القناة" if ch.get("disabled", False) else "⏸️ تعطيل القناة"
         kb.row(
-            types.InlineKeyboardButton(toggle_label, callback_data=f"ch_toggle_{chid}"),
+            types.InlineKeyboardButton("📁 نقل لقسم آخر", callback_data=f"ch_edcat_{chid}"),
+            types.InlineKeyboardButton(toggle_label, callback_data=f"ch_toggle_{chid}")
+        )
+        kb.row(
             types.InlineKeyboardButton("🗑️ حذف القناة", callback_data=f"ch_del_{chid}")
         )
         kb.add(types.InlineKeyboardButton("🔙 رجوع لقنوات القسم", callback_data=f"ch_cat_{cat_id}_1"))
 
         bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
-        bot.answer_callback_query(call.id)
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        return
+
+    if data.startswith("ch_edcat_"):
+        chid = data[len("ch_edcat_"):]
+        ch = db.get_channel(chid)
+        if not ch:
+            try:
+                bot.answer_callback_query(call.id, "⚠️ القناة غير موجودة", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        cats = db.get_categories()
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        for c in cats:
+            c_id = c.get("id")
+            c_name = c.get("name", c_id)
+            icon = c.get("icon", "📁")
+            kb.add(types.InlineKeyboardButton(f"{icon} {c_name}", callback_data=f"ch_setcat_{chid}:{c_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 إلغاء والعودة للقناة", callback_data=f"ch_view_{chid}"))
+
+        text = (
+            f"📁 <b>نقل القناة «{ch.get('name')}» إلى قسم آخر</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"القسم الحالي: <b>{ch.get('categoryName', 'عام')}</b>\n\n"
+            f"اختر القسم الجديد الذي تريد نقل القناة إليه:"
+        )
+        bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        return
+
+    if data.startswith("ch_setcat_"):
+        raw_payload = data[len("ch_setcat_"):]
+        if ":" in raw_payload:
+            parts = raw_payload.split(":", 1)
+        else:
+            parts = raw_payload.rsplit("_", 1)
+        chid = parts[0]
+        new_cat_id = parts[1] if len(parts) > 1 else "general"
+
+        ok, res = db.update_channel_basic(chid, category_id=new_cat_id)
+        try:
+            if ok:
+                cat_name = res.get("categoryName", new_cat_id)
+                bot.answer_callback_query(call.id, f"✅ تم نقل القناة إلى قسم «{cat_name}» بنجاح!", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, f"⚠️ تعذر نقل القناة: {res}", show_alert=True)
+        except Exception:
+            pass
+
+        ch = db.get_channel(chid)
+        if ch:
+            cat_id = ch.get("category", "all")
+            srv_count = len(ch.get("servers", []))
+            dis_status = "🔴 معطلة في التطبيق" if ch.get("disabled", False) else "🟢 تعمل ونشطة"
+            text = (
+                f"📺 <b>تفاصيل القناة: {ch.get('name')}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🆔 المعرف: <code>{chid}</code>\n"
+                f"📁 القسم: <b>{ch.get('categoryName', 'عام')}</b>\n"
+                f"🔘 الحالة: <b>{dis_status}</b>\n"
+                f"⚙️ الجودة: <b>{ch.get('quality', 'FHD')}</b>\n"
+                f"🖥️ عدد السيرفرات/الجودات: <b>{srv_count}</b>\n"
+                f"🔗 رابط البث الحالي:\n<code>{ch.get('url')}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            kb = types.InlineKeyboardMarkup(row_width=2)
+            kb.row(
+                types.InlineKeyboardButton("✏️ تعديل الاسم", callback_data=f"ch_edname_{chid}"),
+                types.InlineKeyboardButton("🔗 تعديل الرابط", callback_data=f"ch_edurl_{chid}")
+            )
+            kb.row(
+                types.InlineKeyboardButton("⚙️ تعديل الجودة", callback_data=f"ch_edqual_{chid}"),
+                types.InlineKeyboardButton("🎨 تعديل الشعار", callback_data=f"ch_edlogo_{chid}")
+            )
+            toggle_label = "🟢 تفعيل القناة" if ch.get("disabled", False) else "⏸️ تعطيل القناة"
+            kb.row(
+                types.InlineKeyboardButton("📁 نقل لقسم آخر", callback_data=f"ch_edcat_{chid}"),
+                types.InlineKeyboardButton(toggle_label, callback_data=f"ch_toggle_{chid}")
+            )
+            kb.row(
+                types.InlineKeyboardButton("🗑️ حذف القناة", callback_data=f"ch_del_{chid}")
+            )
+            kb.add(types.InlineKeyboardButton("🔙 رجوع لقنوات القسم", callback_data=f"ch_cat_{cat_id}_1"))
+            try:
+                bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
+            except Exception:
+                pass
         return
 
     if data.startswith("ch_toggle_"):
         chid = data[len("ch_toggle_"):]
         db.toggle_channel_disabled(chid)
-        bot.answer_callback_query(call.id, "تم تغيير حالة القناة بنجاح ✅")
-        call.data = f"ch_view_{chid}"
-        handle_callbacks(call)
+        try:
+            bot.answer_callback_query(call.id, "تم تغيير حالة القناة بنجاح ✅")
+        except Exception:
+            pass
+        ch = db.get_channel(chid)
+        if ch:
+            cat_id = ch.get("category", "all")
+            srv_count = len(ch.get("servers", []))
+            dis_status = "🔴 معطلة في التطبيق" if ch.get("disabled", False) else "🟢 تعمل ونشطة"
+            text = (
+                f"📺 <b>تفاصيل القناة: {ch.get('name')}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🆔 المعرف: <code>{chid}</code>\n"
+                f"📁 القسم: <b>{ch.get('categoryName', 'عام')}</b>\n"
+                f"🔘 الحالة: <b>{dis_status}</b>\n"
+                f"⚙️ الجودة: <b>{ch.get('quality', 'FHD')}</b>\n"
+                f"🖥️ عدد السيرفرات/الجودات: <b>{srv_count}</b>\n"
+                f"🔗 رابط البث الحالي:\n<code>{ch.get('url')}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            kb = types.InlineKeyboardMarkup(row_width=2)
+            kb.row(
+                types.InlineKeyboardButton("✏️ تعديل الاسم", callback_data=f"ch_edname_{chid}"),
+                types.InlineKeyboardButton("🔗 تعديل الرابط", callback_data=f"ch_edurl_{chid}")
+            )
+            kb.row(
+                types.InlineKeyboardButton("⚙️ تعديل الجودة", callback_data=f"ch_edqual_{chid}"),
+                types.InlineKeyboardButton("🎨 تعديل الشعار", callback_data=f"ch_edlogo_{chid}")
+            )
+            toggle_label = "🟢 تفعيل القناة" if ch.get("disabled", False) else "⏸️ تعطيل القناة"
+            kb.row(
+                types.InlineKeyboardButton("📁 نقل لقسم آخر", callback_data=f"ch_edcat_{chid}"),
+                types.InlineKeyboardButton(toggle_label, callback_data=f"ch_toggle_{chid}")
+            )
+            kb.row(
+                types.InlineKeyboardButton("🗑️ حذف القناة", callback_data=f"ch_del_{chid}")
+            )
+            kb.add(types.InlineKeyboardButton("🔙 رجوع لقنوات القسم", callback_data=f"ch_cat_{cat_id}_1"))
+            try:
+                bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
+            except Exception:
+                pass
         return
 
     if data.startswith("ch_del_"):
@@ -610,43 +774,101 @@ def handle_callbacks(call):
         ch = db.get_channel(chid)
         cat_id = ch.get("category", "all") if ch else "all"
         db.delete_channel(chid)
-        bot.answer_callback_query(call.id, "تم حذف القناة بنجاح 🗑️", show_alert=True)
-        call.data = f"ch_cat_{cat_id}_1"
-        handle_callbacks(call)
+        try:
+            bot.answer_callback_query(call.id, "تم حذف القناة بنجاح 🗑️", show_alert=True)
+        except Exception:
+            pass
+        text, kb = render_channels_page(category_id=cat_id, page=1)
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
+        except Exception:
+            pass
         return
 
     if data.startswith("ch_edname_"):
         chid = data[len("ch_edname_"):]
         user_states[user_id] = {"action": "wait_ch_new_name", "data": {"chid": chid}}
         bot.edit_message_text("✏️ <b>أرسل الآن الاسم الجديد للقناة:</b>", chat_id, msg_id, reply_markup=cancel_keyboard())
-        bot.answer_callback_query(call.id)
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
         return
 
     if data.startswith("ch_edurl_"):
         chid = data[len("ch_edurl_"):]
         user_states[user_id] = {"action": "wait_ch_new_url", "data": {"chid": chid}}
         bot.edit_message_text("🔗 <b>أرسل الآن رابط البث المباشر الجديد للقناة:</b>", chat_id, msg_id, reply_markup=cancel_keyboard())
-        bot.answer_callback_query(call.id)
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
         return
 
     if data.startswith("ch_edqual_"):
         chid = data[len("ch_edqual_"):]
         kb = types.InlineKeyboardMarkup(row_width=2)
         for q in ["4K", "FHD", "HD", "SD", "LOW"]:
-            kb.add(types.InlineKeyboardButton(q, callback_data=f"ch_setqual_{chid}_{q}"))
+            kb.add(types.InlineKeyboardButton(q, callback_data=f"ch_setqual_{chid}:{q}"))
         kb.add(types.InlineKeyboardButton("🔙 رجوع للقناة", callback_data=f"ch_view_{chid}"))
         bot.edit_message_text("⚙️ <b>اختر الجودة المطلوبة للقناة:</b>", chat_id, msg_id, reply_markup=kb)
-        bot.answer_callback_query(call.id)
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
         return
 
     if data.startswith("ch_setqual_"):
-        parts = data.split("_")
-        chid = parts[2]
-        qual = parts[3]
+        raw_payload = data[len("ch_setqual_"):]
+        if ":" in raw_payload:
+            parts = raw_payload.split(":", 1)
+        else:
+            parts = raw_payload.rsplit("_", 1)
+        chid = parts[0]
+        qual = parts[1] if len(parts) > 1 else "FHD"
         db.update_channel_basic(chid, quality=qual)
-        bot.answer_callback_query(call.id, f"تم ضبط الجودة إلى {qual} بنجاح ✅")
-        call.data = f"ch_view_{chid}"
-        handle_callbacks(call)
+        try:
+            bot.answer_callback_query(call.id, f"تم ضبط الجودة إلى {qual} بنجاح ✅")
+        except Exception:
+            pass
+        ch = db.get_channel(chid)
+        if ch:
+            cat_id = ch.get("category", "all")
+            srv_count = len(ch.get("servers", []))
+            dis_status = "🔴 معطلة في التطبيق" if ch.get("disabled", False) else "🟢 تعمل ونشطة"
+            text = (
+                f"📺 <b>تفاصيل القناة: {ch.get('name')}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🆔 المعرف: <code>{chid}</code>\n"
+                f"📁 القسم: <b>{ch.get('categoryName', 'عام')}</b>\n"
+                f"🔘 الحالة: <b>{dis_status}</b>\n"
+                f"⚙️ الجودة: <b>{ch.get('quality', 'FHD')}</b>\n"
+                f"🖥️ عدد السيرفرات/الجودات: <b>{srv_count}</b>\n"
+                f"🔗 رابط البث الحالي:\n<code>{ch.get('url')}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            kb = types.InlineKeyboardMarkup(row_width=2)
+            kb.row(
+                types.InlineKeyboardButton("✏️ تعديل الاسم", callback_data=f"ch_edname_{chid}"),
+                types.InlineKeyboardButton("🔗 تعديل الرابط", callback_data=f"ch_edurl_{chid}")
+            )
+            kb.row(
+                types.InlineKeyboardButton("⚙️ تعديل الجودة", callback_data=f"ch_edqual_{chid}"),
+                types.InlineKeyboardButton("🎨 تعديل الشعار", callback_data=f"ch_edlogo_{chid}")
+            )
+            toggle_label = "🟢 تفعيل القناة" if ch.get("disabled", False) else "⏸️ تعطيل القناة"
+            kb.row(
+                types.InlineKeyboardButton("📁 نقل لقسم آخر", callback_data=f"ch_edcat_{chid}"),
+                types.InlineKeyboardButton(toggle_label, callback_data=f"ch_toggle_{chid}")
+            )
+            kb.row(
+                types.InlineKeyboardButton("🗑️ حذف القناة", callback_data=f"ch_del_{chid}")
+            )
+            kb.add(types.InlineKeyboardButton("🔙 رجوع لقنوات القسم", callback_data=f"ch_cat_{cat_id}_1"))
+            try:
+                bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
+            except Exception:
+                pass
         return
 
     if data.startswith("ch_edlogo_"):
@@ -828,6 +1050,33 @@ def handle_callbacks(call):
         handle_callbacks(call)
         return
 
+    if data == "notif_fcm_stats":
+        from fcm_sender import is_firebase_configured
+        devs = db.get_fcm_devices()
+        is_cfg = is_firebase_configured()
+        status_txt = "🟢 مربوط ومفعل (Cloud Messaging HTTP API)" if is_cfg else "🟡 بانتظار إضافة FIREBASE_SERVER_KEY في .env"
+
+        dev_lines = []
+        for d in devs[:8]:
+            dev_lines.append(f"• <b>{d.get('model', 'جهاز')}</b> (v{d.get('app_version', '1.1')}) - <i>{d.get('updated_at', '')[:16]}</i>")
+
+        devs_preview = "\n".join(dev_lines) if dev_lines else "لا توجد أجهزة مسجلة حالياً بعد."
+
+        text = (
+            "📱 <b>إحصائيات وحالة أجهزة FCM المسجلة</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 إجمالي الأجهزة المتصلة: <b>{len(devs)} جهاز</b>\n"
+            f"🔗 حالة الربط السحابي: {status_txt}\n\n"
+            f"📋 <b>أحدث الأجهزة المسجلة:</b>\n{devs_preview}\n\n"
+            "💡 <i>يتم تسجيل كل جهاز تلقائياً عند فتح التطبيق وتحديث الرمز دون أي تدخل يدوي.</i>"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🔄 تحديث", callback_data="notif_fcm_stats"))
+        kb.add(types.InlineKeyboardButton("🔙 رجوع لقائمة الإشعارات", callback_data="menu_notif"))
+        bot.edit_message_text(text, chat_id, msg_id, reply_markup=kb)
+        bot.answer_callback_query(call.id)
+        return
+
     if data == "notif_sound_upload":
         user_states[user_id] = {"action": "wait_notif_sound_upload", "data": {}}
         prompt = (
@@ -947,19 +1196,27 @@ def handle_text_messages(message):
             file_id = message.document.file_id
 
         if file_id:
-            file_info = bot.get_file(file_id)
-            down = bot.download_file(file_info.file_path)
-            fn = f"cat_{int(time.time())}.jpg"
-            save_path = os.path.join(UPLOADS_DIR, fn)
-            with open(save_path, "wb") as f:
-                f.write(down)
-            image_url = f"{PUBLIC_URL}/static/uploads/{fn}"
-            icon = "🖼️"
+            try:
+                file_info = bot.get_file(file_id)
+                down = bot.download_file(file_info.file_path)
+                fn = f"cat_{int(time.time())}.jpg"
+                save_path = os.path.join(UPLOADS_DIR, fn)
+                with open(save_path, "wb") as f:
+                    f.write(down)
+                image_url = f"{PUBLIC_URL}/static/uploads/{fn}"
+                icon = "🖼️"
+            except Exception as e:
+                logger.error("Failed to download category logo: %s", e)
+                bot.reply_to(message, f"⚠️ حدث خطأ أثناء تحميل الصورة: {e}\nيرجى إعادة إرسالها أو إرسال رابط مباشر.")
+                return
         elif raw_text.startswith("http://") or raw_text.startswith("https://"):
-            image_url = raw_text
+            image_url = raw_text.strip()
             icon = "🖼️"
+        elif raw_text.strip().lower() in ["تخطي", "بدون", "لا يوجد", "skip", "none"]:
+            icon = "📁"
+            image_url = ""
         elif raw_text:
-            icon = raw_text.strip()[:4]
+            icon = raw_text.strip()[:6]
 
         # Generate unique safe ID
         clean_id = re.sub(r'[^a-zA-Z0-9]+', '_', cat_name).strip('_').lower()
@@ -989,9 +1246,21 @@ def handle_text_messages(message):
 
     if action == "wait_cat_new_name":
         cid = state["data"]["cid"]
-        db.update_category(cid, new_name=raw_text)
+        if len(raw_text) < 2:
+            bot.reply_to(message, "⚠️ اسم القسم قصير جداً. يرجى إدخال اسم واضح للقسم:")
+            return
+        ok, res = db.update_category(cid, new_name=raw_text)
         user_states.pop(user_id, None)
-        bot.reply_to(message, f"✅ تم تعديل اسم القسم إلى: <b>{raw_text}</b> بنجاح!", reply_markup=back_keyboard(f"cat_view_{cid}"))
+        if ok:
+            kb = types.InlineKeyboardMarkup(row_width=2)
+            kb.row(
+                types.InlineKeyboardButton("📁 عرض تفاصيل القسم", callback_data=f"cat_view_{cid}"),
+                types.InlineKeyboardButton("🗂️ قائمة الأقسام", callback_data="cat_p_1")
+            )
+            kb.add(types.InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu"))
+            bot.reply_to(message, f"✅ <b>تم تعديل اسم القسم بنجاح!</b>\nالاسم الجديد: <b>{raw_text}</b>\nسيظهر فوراً داخل التطبيق لجميع المستخدمين.", reply_markup=kb)
+        else:
+            bot.reply_to(message, f"⚠️ تعذر تعديل القسم: {res}", reply_markup=back_keyboard(f"cat_view_{cid}"))
         return
 
     if action == "wait_cat_new_icon":
@@ -1005,19 +1274,27 @@ def handle_text_messages(message):
             file_id = message.document.file_id
 
         if file_id:
-            file_info = bot.get_file(file_id)
-            down = bot.download_file(file_info.file_path)
-            fn = f"cat_{int(time.time())}.jpg"
-            save_path = os.path.join(UPLOADS_DIR, fn)
-            with open(save_path, "wb") as f:
-                f.write(down)
-            image_url = f"{PUBLIC_URL}/static/uploads/{fn}"
-            icon = "🖼️"
+            try:
+                file_info = bot.get_file(file_id)
+                down = bot.download_file(file_info.file_path)
+                fn = f"cat_{int(time.time())}.jpg"
+                save_path = os.path.join(UPLOADS_DIR, fn)
+                with open(save_path, "wb") as f:
+                    f.write(down)
+                image_url = f"{PUBLIC_URL}/static/uploads/{fn}"
+                icon = "🖼️"
+            except Exception as e:
+                logger.error("Failed to download new category logo: %s", e)
+                bot.reply_to(message, f"⚠️ حدث خطأ أثناء تحميل الصورة: {e}\nيرجى إعادة إرسالها أو إرسال رابط مباشر.")
+                return
         elif raw_text.startswith("http://") or raw_text.startswith("https://"):
-            image_url = raw_text
+            image_url = raw_text.strip()
             icon = "🖼️"
+        elif raw_text.strip().lower() in ["حذف", "ازالة", "إزالة", "clear", "remove", "none", "بدون"]:
+            image_url = ""
+            icon = "📁"
         elif raw_text:
-            icon = raw_text.strip()[:4]
+            icon = raw_text.strip()[:6]
 
         db.update_category(cid, new_icon=icon, new_image=image_url)
         user_states.pop(user_id, None)
@@ -1078,38 +1355,79 @@ def handle_text_messages(message):
 
     if action == "wait_ch_new_name":
         chid = state["data"]["chid"]
-        db.update_channel_basic(chid, name=raw_text)
+        if len(raw_text) < 2:
+            bot.reply_to(message, "⚠️ اسم القناة قصير جداً. يرجى إدخال اسم صحيح:")
+            return
+        ok, res = db.update_channel_basic(chid, name=raw_text)
         user_states.pop(user_id, None)
-        bot.reply_to(message, "✅ تم تعديل اسم القناة بنجاح!", reply_markup=back_keyboard(f"ch_view_{chid}"))
+        ch = db.get_channel(chid)
+        cat_id = ch.get("category", "all") if ch else "all"
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.row(
+            types.InlineKeyboardButton("📺 تفاصيل القناة", callback_data=f"ch_view_{chid}"),
+            types.InlineKeyboardButton("📁 قنوات القسم", callback_data=f"ch_cat_{cat_id}_1")
+        )
+        kb.add(types.InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu"))
+        bot.reply_to(message, f"✅ تم تعديل اسم القناة إلى: <b>{raw_text}</b> بنجاح!", reply_markup=kb)
         return
 
     if action == "wait_ch_new_url":
         chid = state["data"]["chid"]
-        db.update_channel_basic(chid, url=raw_text)
+        if not (raw_text.startswith("http://") or raw_text.startswith("https://")):
+            bot.reply_to(message, "⚠️ يرجى إرسال رابط بث مباشر صحيح يبدأ بـ http:// أو https://")
+            return
+        ok, res = db.update_channel_basic(chid, url=raw_text)
         user_states.pop(user_id, None)
-        bot.reply_to(message, "✅ تم تعديل رابط بث القناة بنجاح!", reply_markup=back_keyboard(f"ch_view_{chid}"))
+        ch = db.get_channel(chid)
+        cat_id = ch.get("category", "all") if ch else "all"
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.row(
+            types.InlineKeyboardButton("📺 تفاصيل القناة", callback_data=f"ch_view_{chid}"),
+            types.InlineKeyboardButton("📁 قنوات القسم", callback_data=f"ch_cat_{cat_id}_1")
+        )
+        kb.add(types.InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu"))
+        bot.reply_to(message, "✅ تم تعديل رابط بث القناة بنجاح وسيتم تشغيله داخل التطبيق!", reply_markup=kb)
         return
 
     if action == "wait_ch_new_logo":
         chid = state["data"]["chid"]
         logo_val = ""
+        file_id = None
         if message.photo:
             file_id = message.photo[-1].file_id
-            file_info = bot.get_file(file_id)
-            down = bot.download_file(file_info.file_path)
-            fn = f"ch_{chid}_{int(time.time())}.jpg"
-            save_path = os.path.join(UPLOADS_DIR, fn)
-            with open(save_path, "wb") as f:
-                f.write(down)
-            logo_val = f"{PUBLIC_URL}/static/uploads/{fn}"
+        elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+            file_id = message.document.file_id
+
+        if file_id:
+            try:
+                file_info = bot.get_file(file_id)
+                down = bot.download_file(file_info.file_path)
+                fn = f"ch_{int(time.time())}.jpg"
+                save_path = os.path.join(UPLOADS_DIR, fn)
+                with open(save_path, "wb") as f:
+                    f.write(down)
+                logo_val = f"{PUBLIC_URL}/static/uploads/{fn}"
+            except Exception as e:
+                bot.reply_to(message, f"⚠️ خطأ أثناء تنزيل الصورة: {e}")
+                return
         elif raw_text.startswith("http://") or raw_text.startswith("https://"):
-            logo_val = raw_text
+            logo_val = raw_text.strip()
+        elif raw_text.strip().lower() in ["حذف", "ازالة", "إزالة", "clear", "remove", "none", "بدون"]:
+            logo_val = "📺"
         elif raw_text:
             logo_val = raw_text.strip()[:6]
 
         db.update_channel_basic(chid, logo=logo_val)
         user_states.pop(user_id, None)
-        bot.reply_to(message, "✅ تم تحديث شعار وأيقونة القناة بنجاح!", reply_markup=back_keyboard(f"ch_view_{chid}"))
+        ch = db.get_channel(chid)
+        cat_id = ch.get("category", "all") if ch else "all"
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.row(
+            types.InlineKeyboardButton("📺 تفاصيل القناة", callback_data=f"ch_view_{chid}"),
+            types.InlineKeyboardButton("📁 قنوات القسم", callback_data=f"ch_cat_{cat_id}_1")
+        )
+        kb.add(types.InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu"))
+        bot.reply_to(message, "✅ تم تحديث شعار وأيقونة القناة بنجاح!", reply_markup=kb)
         return
 
     # 3. APK Update Wizard
@@ -1254,13 +1572,25 @@ def handle_text_messages(message):
 
         cur_sound = db.get_notification_sound()
         db.add_notification(title, msg_content, image=image_url)
+        from fcm_sender import send_fcm_notification
+        fcm_res = send_fcm_notification(title, msg_content, image_url=image_url, sound_url=cur_sound.get("url"))
         user_states.pop(user_id, None)
+
+        total_devs = db.get_fcm_devices_count()
+        fcm_info = ""
+        if fcm_res.get("configured"):
+            fcm_info = f"\n🚀 <b>بث Firebase FCM:</b> تم الإرسال إلى {fcm_res.get('success', 0)} جهاز بنجاح ✅"
+            if fcm_res.get("cleaned_invalid_tokens", 0) > 0:
+                fcm_info += f" (تم تنظيف {fcm_res.get('cleaned_invalid_tokens')} رمز منتهي)"
+        else:
+            fcm_info = f"\n📱 أجهزة FCM المستهدفة: <b>{total_devs} جهاز</b> (جاهزة للاستقبال الفوري والمنبه)"
 
         bot.reply_to(
             message,
             f"🎉 <b>تم إرسال الإشعار لجميع المستخدمين بنجاح!</b> 📢\n\n<b>{title}</b>\n{msg_content}\n"
             f"🖼️ الصورة: {'مرفقة ✅' if image_url else 'بدون صورة'}\n"
-            f"🔊 نغمة الإشعار: <b>{cur_sound.get('name', 'افتراضي')}</b>",
+            f"🔊 نغمة الإشعار: <b>{cur_sound.get('name', 'افتراضي')}</b>"
+            f"{fcm_info}",
             reply_markup=back_keyboard("menu_notif")
         )
         return
@@ -1356,10 +1686,22 @@ def handle_skip_notif_image(call):
     if state and state.get("action") == "wait_notif_image":
         title = state["data"]["title"]
         msg_content = state["data"]["msg"]
+        cur_sound = db.get_notification_sound()
         db.add_notification(title, msg_content, image="")
+        from fcm_sender import send_fcm_notification
+        fcm_res = send_fcm_notification(title, msg_content, image_url="", sound_url=cur_sound.get("url"))
         user_states.pop(user_id, None)
+
+        total_devs = db.get_fcm_devices_count()
+        fcm_info = ""
+        if fcm_res.get("configured"):
+            fcm_info = f"\n🚀 <b>بث Firebase FCM:</b> تم الإرسال إلى {fcm_res.get('success', 0)} جهاز بنجاح ✅"
+        else:
+            fcm_info = f"\n📱 أجهزة FCM المستهدفة: <b>{total_devs} جهاز</b>"
+
         bot.edit_message_text(
-            f"🎉 <b>تم إرسال الإشعار لجميع المستخدمين بنجاح!</b> 📢\n\n<b>{title}</b>\n{msg_content}",
+            f"🎉 <b>تم إرسال الإشعار لجميع المستخدمين بنجاح!</b> 📢\n\n<b>{title}</b>\n{msg_content}"
+            f"{fcm_info}",
             call.message.chat.id,
             call.message.message_id,
             reply_markup=back_keyboard("menu_notif")
